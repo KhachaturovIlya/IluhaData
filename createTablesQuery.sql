@@ -1,4 +1,4 @@
--- 1. Должности (правило 1: 4 должности; правило 13: у сотрудника одна должность)
+-- E11. Должность
 CREATE TABLE positions (
     position_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     position_code VARCHAR(20) NOT NULL UNIQUE,
@@ -6,22 +6,23 @@ CREATE TABLE positions (
         CHECK (position_name IN ('менеджер', 'бухгалтер', 'коллектор', 'администратор'))
 );
 
--- 2. Сотрудники
+-- E10. Сотрудник
 CREATE TABLE employees (
     employee_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    full_name VARCHAR(200) NOT NULL,
     passport_number VARCHAR(10) NOT NULL UNIQUE CHECK (passport_number ~ '^[0-9]{10}$'),
     position_id BIGINT NOT NULL REFERENCES positions(position_id) ON DELETE RESTRICT,
     phone TEXT NOT NULL,
     email TEXT NOT NULL,
     hire_date DATE NOT NULL,
     fire_date DATE,
-    hired_by_employee_id BIGINT REFERENCES employees(employee_id) ON DELETE RESTRICT, -- NULL у самого первого админа
-    fired_by_employee_id BIGINT REFERENCES employees(employee_id) ON DELETE RESTRICT, -- правило 16: не более одного
+    hired_by_employee_id BIGINT REFERENCES employees(employee_id) ON DELETE RESTRICT,
+    fired_by_employee_id BIGINT REFERENCES employees(employee_id) ON DELETE RESTRICT,
     CHECK (fire_date IS NULL OR fire_date >= hire_date),
     CHECK ((fire_date IS NULL) = (fired_by_employee_id IS NULL))
 );
 
--- 3. Отделения (правило 17: один адрес — одно отделение; правило 14: админ отвечает за одно отделение)
+-- E3. Отделение
 CREATE TABLE departments (
     department_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     address TEXT NOT NULL UNIQUE,
@@ -30,7 +31,7 @@ CREATE TABLE departments (
     extra_info TEXT
 );
 
--- 4. Должники
+-- E1. Должник
 CREATE TABLE debtors (
     debtor_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     full_name VARCHAR(200) NOT NULL,
@@ -40,7 +41,7 @@ CREATE TABLE debtors (
     address TEXT NOT NULL
 );
 
--- 5. Клиенты (правило 18: уникальное название организации)
+-- E2. Клиент
 CREATE TABLE clients (
     client_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     company_name VARCHAR(200) NOT NULL UNIQUE,
@@ -48,25 +49,26 @@ CREATE TABLE clients (
     address TEXT NOT NULL
 );
 
--- 6. Договоры (правило 15: у клиента может быть несколько договоров)
+-- E4. Договор
 CREATE TABLE contracts (
     contract_number BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     manager_employee_id BIGINT NOT NULL REFERENCES employees(employee_id) ON DELETE RESTRICT,
     client_id BIGINT NOT NULL REFERENCES clients(client_id) ON DELETE RESTRICT,
     debtor_id BIGINT NOT NULL REFERENCES debtors(debtor_id) ON DELETE RESTRICT,
+    department_id BIGINT NOT NULL REFERENCES departments(department_id) ON DELETE RESTRICT,
     debt_sum NUMERIC(12, 2) NOT NULL CHECK (debt_sum > 0.00),
     reward_percent NUMERIC(5, 2) NOT NULL CHECK (reward_percent > 0 AND reward_percent <= 100),
     status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE'
         CHECK (status IN ('ACTIVE', 'CLOSED')),
     closed_date DATE,
-    closed_by_employee_id BIGINT REFERENCES employees(employee_id) ON DELETE RESTRICT, -- админ, подтвердивший закрытие
+    closed_by_employee_id BIGINT REFERENCES employees(employee_id) ON DELETE RESTRICT,
     CHECK ((status = 'CLOSED') = (closed_date IS NOT NULL)),
     CHECK ((status = 'CLOSED') = (closed_by_employee_id IS NOT NULL))
 );
 
--- 7. План выплат
+-- E5. План выплат
 CREATE TABLE payment_plans (
-    payment_plan_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    plan_item_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     contract_number BIGINT NOT NULL REFERENCES contracts(contract_number) ON DELETE CASCADE,
     created_by_employee_id BIGINT NOT NULL REFERENCES employees(employee_id) ON DELETE RESTRICT,
     due_date DATE NOT NULL,
@@ -75,7 +77,7 @@ CREATE TABLE payment_plans (
     is_paid BOOLEAN NOT NULL DEFAULT FALSE
 );
 
--- 8. Входящие платёжные документы
+-- E6. Входящий документ
 CREATE TABLE incoming_documents (
     incoming_document_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     debtor_id BIGINT NOT NULL REFERENCES debtors(debtor_id) ON DELETE RESTRICT,
@@ -84,64 +86,68 @@ CREATE TABLE incoming_documents (
     payment_date DATE NOT NULL
 );
 
--- 9. Оплата: связь «платёж ↔ пункт плана» (правило 7: один платёж закрывает несколько пунктов)
+-- Оплата (связь E5 и E6)
 CREATE TABLE payments (
     payment_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    payment_plan_id BIGINT NOT NULL REFERENCES payment_plans(payment_plan_id) ON DELETE CASCADE,
+    plan_item_id BIGINT NOT NULL REFERENCES payment_plans(plan_item_id) ON DELETE CASCADE,
     incoming_document_id BIGINT NOT NULL REFERENCES incoming_documents(incoming_document_id) ON DELETE CASCADE,
-    UNIQUE (payment_plan_id, incoming_document_id)
+    UNIQUE (plan_item_id, incoming_document_id)
 );
 
--- 10. Получатели (супертип) и подтипы
+-- Получатель
 CREATE TABLE recipients (
     recipient_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY
 );
 
+-- Получатель-Клиент
 CREATE TABLE client_recipients (
     recipient_id BIGINT PRIMARY KEY REFERENCES recipients(recipient_id) ON DELETE CASCADE,
     client_id BIGINT NOT NULL UNIQUE REFERENCES clients(client_id) ON DELETE RESTRICT
 );
 
+-- Получатель-Сотрудник
 CREATE TABLE employee_recipients (
     recipient_id BIGINT PRIMARY KEY REFERENCES recipients(recipient_id) ON DELETE CASCADE,
     employee_id BIGINT NOT NULL UNIQUE REFERENCES employees(employee_id) ON DELETE RESTRICT
 );
 
--- 11. Исходящие платёжные документы
+-- E7. Исходящий документ
 CREATE TABLE outgoing_documents (
     outgoing_document_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     recipient_id BIGINT NOT NULL REFERENCES recipients(recipient_id) ON DELETE RESTRICT,
     accountant_employee_id BIGINT NOT NULL REFERENCES employees(employee_id) ON DELETE RESTRICT,
-    payment_plan_id BIGINT REFERENCES payment_plans(payment_plan_id) ON DELETE RESTRICT, -- NULL для выплат за мероприятия
+    plan_item_id BIGINT REFERENCES payment_plans(plan_item_id) ON DELETE RESTRICT,
     document_type VARCHAR(50) NOT NULL
         CHECK (document_type IN ('DEBT_RETURN', 'REWARD', 'EVENT_PAYMENT')),
     payment_sum NUMERIC(12, 2) NOT NULL CHECK (payment_sum > 0.00),
     payment_date DATE NOT NULL
 );
 
--- 12. Услуги коллекторов
+-- E9. Услуга
 CREATE TABLE services (
     service_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     service_name VARCHAR(150) NOT NULL UNIQUE,
     description TEXT
 );
 
--- 13. Стимулирующие мероприятия
+-- E8. Мероприятие
 CREATE TABLE events (
     event_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     debtor_id BIGINT NOT NULL REFERENCES debtors(debtor_id) ON DELETE RESTRICT,
     event_date DATE NOT NULL
 );
 
+-- МероприятиеСотрудник
 CREATE TABLE event_employees (
     employee_id BIGINT NOT NULL REFERENCES employees(employee_id) ON DELETE RESTRICT,
     event_id BIGINT NOT NULL REFERENCES events(event_id) ON DELETE CASCADE,
     PRIMARY KEY (employee_id, event_id)
 );
 
+-- МероприятиеУслуга
 CREATE TABLE event_services (
     service_id BIGINT NOT NULL REFERENCES services(service_id) ON DELETE RESTRICT,
     event_id BIGINT NOT NULL REFERENCES events(event_id) ON DELETE CASCADE,
-    is_successful BOOLEAN, -- NULL = ещё не выполнена
+    is_successful BOOLEAN,
     PRIMARY KEY (service_id, event_id)
 );
