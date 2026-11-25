@@ -58,12 +58,7 @@ CREATE TABLE contracts (
     department_id BIGINT NOT NULL REFERENCES departments(department_id) ON DELETE RESTRICT,
     debt_sum NUMERIC(12, 2) NOT NULL CHECK (debt_sum > 0.00),
     reward_percent NUMERIC(5, 2) NOT NULL CHECK (reward_percent > 0 AND reward_percent <= 100),
-    status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE'
-        CHECK (status IN ('ACTIVE', 'CLOSED')),
-    closed_date DATE,
-    closed_by_employee_id BIGINT REFERENCES employees(employee_id) ON DELETE RESTRICT,
-    CHECK ((status = 'CLOSED') = (closed_date IS NOT NULL)),
-    CHECK ((status = 'CLOSED') = (closed_by_employee_id IS NOT NULL))
+    contract_date DATE NOT NULL
 );
 
 -- E5. План выплат
@@ -117,8 +112,6 @@ CREATE TABLE outgoing_documents (
     recipient_id BIGINT NOT NULL REFERENCES recipients(recipient_id) ON DELETE RESTRICT,
     accountant_employee_id BIGINT NOT NULL REFERENCES employees(employee_id) ON DELETE RESTRICT,
     plan_item_id BIGINT REFERENCES payment_plans(plan_item_id) ON DELETE RESTRICT,
-    document_type VARCHAR(50) NOT NULL
-        CHECK (document_type IN ('DEBT_RETURN', 'REWARD', 'EVENT_PAYMENT')),
     payment_sum NUMERIC(12, 2) NOT NULL CHECK (payment_sum > 0.00),
     payment_date DATE NOT NULL
 );
@@ -127,7 +120,8 @@ CREATE TABLE outgoing_documents (
 CREATE TABLE services (
     service_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     service_name VARCHAR(150) NOT NULL UNIQUE,
-    description TEXT
+    description TEXT,
+    price NUMERIC(12, 2) NOT NULL CHECK (price > 0.00)
 );
 
 -- E8. Мероприятие

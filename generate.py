@@ -12,16 +12,16 @@ from psycopg2.extras import execute_values
 SEED = 42
 
 N_DEBTORS = 10_000
-N_CONTRACTS = 10_000  # по одному договору на должника
+N_CONTRACTS = 10_000
 N_EVENTS = 10_000
 N_CLIENTS = 2_000
 N_DEPARTMENTS = 100
-N_ADMINS = 120  # не меньше N_DEPARTMENTS: админ отделения уникален
+N_ADMINS = 120
 N_MANAGERS = 300
 N_ACCOUNTANTS = 150
 N_COLLECTORS = 430
 
-HISTORY_DAYS = 500
+HISTORY_DAYS = 540
 LIMIT_DAYS = 365
 PENALTY_RATE = Decimal("0.05")
 MANAGER_SHARE = Decimal("0.10")
@@ -98,7 +98,6 @@ def unique_values(count, producer):
 
 
 def build_plan(debt):
-    # < 100 т.р.: еженедельные 10 т.р. и остаток; иначе 10 равных платежей
     if debt < 100_000:
         amounts, left = [], debt
         while left >= 10_000:
@@ -162,14 +161,7 @@ def simulate_contract(sign_date, debt, today):
         if item["paid_on"] is None and item["due"] < horizon:
             penalties.extend(make_penalties(item, ceil_weeks(horizon - item["due"])))
 
-    if all(item["paid_on"] for item in items):
-        last_payment = max(item["paid_on"] for item in items)
-        closed_date = min(today, last_payment + timedelta(days=random.randint(0, 5)))
-    elif limit_date <= today:
-        closed_date = limit_date
-    else:
-        closed_date = None
-    return items, penalties, closed_date
+    return items, penalties
 
 
 def generate_data(today):
@@ -228,7 +220,6 @@ def generate_data(today):
     company_names = unique_values(N_CLIENTS, fake.company)
     clients = [(name, fake.phone_number(), fake.address()) for name in company_names]
 
-    # Получатели: клиенты имеют id 1..N_CLIENTS, сотрудники N_CLIENTS + employee_id
     total_recipients = N_CLIENTS + len(employees)
     recipients = [(i,) for i in range(1, total_recipients + 1)]
     client_recipients = [(c, c) for c in range(1, N_CLIENTS + 1)]
@@ -247,12 +238,9 @@ def generate_data(today):
         reward_percent = money(random.uniform(5, 30))
         sign_date = today - timedelta(days=random.randint(0, HISTORY_DAYS))
 
-        items, penalties, closed_date = simulate_contract(sign_date, debt, today)
-        contracts.append((
-            manager_id, client_id, debtor_id, random.randint(1, N_DEPARTMENTS), debt, reward_percent,
-            "CLOSED" if closed_date else "ACTIVE", closed_date,
-            random.choice(admin_ids) if closed_date else None,
-        ))
+        items, penalties = simulate_contract(sign_date, debt, today)
+        contracts.append((manager_id, client_id, debtor_id, random.randint(1, N_DEPARTMENTS),
+                          debt, reward_percent, sign_date))
 
         paid_groups = {}
         for item in items + penalties:
@@ -272,15 +260,16 @@ def generate_data(today):
             for item in group:
                 payments.append((item["id"], document_id))
                 if item["penalty"]:
-                    continue  # пени целиком остаются агентству
+                    continue
                 reward = money(item["sum"] * reward_percent / 100)
-                outgoing.append((client_id, accountant_id, item["id"], "DEBT_RETURN",
+                outgoing.append((client_id, accountant_id, item["id"],
                                  item["sum"] - reward, out_date))
-                outgoing.append((N_CLIENTS + manager_id, accountant_id, item["id"], "REWARD",
+                outgoing.append((N_CLIENTS + manager_id, accountant_id, item["id"],
                                  money(reward * MANAGER_SHARE), out_date))
 
     # E9. Услуга
-    services = list(SERVICES)
+    services = [(name, description, Decimal(random.randrange(4, 80)) * 100)
+                for name, description in SERVICES]
 
     # E8. Мероприятие, участники и услуги
     events, event_employees, event_services = [], [], []
@@ -298,7 +287,7 @@ def generate_data(today):
         for collector_id in participants:
             event_employees.append((collector_id, event_id))
             outgoing.append((N_CLIENTS + collector_id, random.choice(accountant_ids), None,
-                             "EVENT_PAYMENT", EVENT_PAYMENT,
+                             EVENT_PAYMENT,
                              min(today, event_date + timedelta(days=random.randint(0, 2)))))
 
         for service_id in random.sample(range(1, len(services) + 1), random.randint(1, 3)):
@@ -316,7 +305,7 @@ def generate_data(today):
         ("debtors", "full_name, passport_number, phone, trusted_person_phone, address", debtors, False),
         ("clients", "company_name, phone, address", clients, False),
         ("contracts", "manager_employee_id, client_id, debtor_id, department_id, debt_sum, reward_percent, "
-                      "status, closed_date, closed_by_employee_id", contracts, False),
+                      "contract_date", contracts, False),
         ("payment_plans", "contract_number, created_by_employee_id, due_date, payment_sum, is_penalty, "
                           "is_paid", plan_rows, False),
         ("incoming_documents", "debtor_id, accountant_employee_id, payment_sum, payment_date", incoming, False),
@@ -324,9 +313,9 @@ def generate_data(today):
         ("recipients", "recipient_id", recipients, True),
         ("client_recipients", "recipient_id, client_id", client_recipients, False),
         ("employee_recipients", "recipient_id, employee_id", employee_recipients, False),
-        ("outgoing_documents", "recipient_id, accountant_employee_id, plan_item_id, document_type, "
+        ("outgoing_documents", "recipient_id, accountant_employee_id, plan_item_id, "
                                "payment_sum, payment_date", outgoing, False),
-        ("services", "service_name, description", services, False),
+        ("services", "service_name, description, price", services, False),
         ("events", "debtor_id, event_date", events, False),
         ("event_employees", "employee_id, event_id", event_employees, False),
         ("event_services", "service_id, event_id, is_successful", event_services, False),
@@ -347,7 +336,6 @@ def main():
         with conn, conn.cursor() as cur:
             cur.execute("SELECT CURRENT_DATE")
             data = generate_data(cur.fetchone()[0])
-            # Внешние ключи считаются по порядку вставки, поэтому нужна пустая схема.
             cur.execute("LOCK TABLE " + ", ".join(table for table, _, _, _ in data) + " IN EXCLUSIVE MODE")
             for table, _, _, _ in data:
                 cur.execute(f"SELECT EXISTS (SELECT 1 FROM {table})")
